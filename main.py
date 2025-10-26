@@ -1,6 +1,7 @@
 """
 Main Entry Point - LogisticsBot Control System
 Integrates Flask Web Dashboard with Robot Hardware Control
+Supports Arduino Nano for motor/sensor control
 """
 
 from flask import Flask, render_template, Response, jsonify, request
@@ -18,7 +19,8 @@ sys.path.append(str(Path(__file__).parent))
 
 # Import custom modules
 from drivers.motor.l298n_driver import L298NDriver, DifferentialDrive
-from control.robot_controller import RobotController, AutoModeController
+from drivers.motor.arduino_driver import ArduinoDriver
+from control.robot_controller import RobotController, AutoModeController, FollowModeController
 from utils.logger import setup_logger
 from utils.config_loader import load_config
 
@@ -33,14 +35,15 @@ logger = setup_logger('main', 'data/logs/robot.log')
 # Global variables
 robot_controller = None
 auto_controller = None
-follow_controller = None  # NEW: Follow mode controller
+follow_controller = None
+motor_driver = None
 config = None
 LOG_FILE = 'data/logs/robot.log'
 
 # Follow mode settings
 follow_settings = {
     'target_color': 'red',
-    'follow_distance': 50,  # cm
+    'follow_distance': 50,
     'tracking': False,
     'target_x': 0,
     'target_y': 0,
@@ -53,16 +56,39 @@ follow_settings = {
 
 def initialize_hardware():
     """Initialize robot hardware"""
-    global robot_controller, auto_controller, follow_controller, config
+    global robot_controller, auto_controller, follow_controller, motor_driver, config
     
     try:
         # Load configuration
         config = load_config('config/hardware_config.yaml')
         logger.info("Configuration loaded successfully")
         
-        # Initialize motor driver
-        motor_driver = L298NDriver(config)
-        logger.info("L298N Motor Driver initialized")
+        # Determine control mode
+        control_mode = config.get('control_mode', 'arduino')
+        
+        if control_mode == 'arduino':
+            # Use Arduino for motor control
+            logger.info("Initializing Arduino driver...")
+            arduino_config = config.get('arduino', {})
+            
+            motor_driver = ArduinoDriver(
+                port=arduino_config.get('port', '/dev/ttyUSB0'),
+                baudrate=arduino_config.get('baudrate', 115200)
+            )
+            
+            if not motor_driver.connected:
+                logger.error("Failed to connect to Arduino!")
+                return False
+            
+            # Set sensor callback
+            motor_driver.set_sensor_callback(on_arduino_sensor_data)
+            logger.info("Arduino Motor Driver initialized")
+            
+        else:
+            # Use Raspberry Pi GPIO directly (legacy mode)
+            logger.info("Initializing L298N driver (direct GPIO mode)...")
+            motor_driver = L298NDriver(config)
+            logger.info("L298N Motor Driver initialized")
         
         # Initialize robot controller
         robot_controller = RobotController(motor_driver, config)
@@ -72,15 +98,32 @@ def initialize_hardware():
         auto_controller = AutoModeController(robot_controller)
         logger.info("Auto Mode Controller initialized")
         
-        # TODO: Initialize follow controller when ready
-        # follow_controller = FollowModeController(robot_controller)
-        # logger.info("Follow Mode Controller initialized")
+        # Initialize follow controller
+        follow_controller = FollowModeController(robot_controller)
+        logger.info("Follow Mode Controller initialized")
         
         return True
         
     except Exception as e:
         logger.error(f"Failed to initialize hardware: {e}")
+        import traceback
+        traceback.print_exc()
         return False
+
+
+def on_arduino_sensor_data(sensor_data: dict):
+    """
+    Callback when Arduino sends sensor data
+    
+    Args:
+        sensor_data: Dictionary with sensor readings
+    """
+    # Update global sensor data for web interface
+    # This is called automatically by Arduino driver
+    logger.debug(f"Sensor update: {sensor_data}")
+    
+    # Emit to all connected clients
+    socketio.emit('arduino_sensors', sensor_data)
 
 
 # ===== FLASK ROUTES =====
@@ -93,31 +136,34 @@ def index():
 
 @app.route('/video_feed')
 def video_feed():
-    """Video streaming route (placeholder)"""
+    """Video streaming route"""
     def generate():
-        # Placeholder for camera feed
-        # Replace with actual camera if available
         try:
-            camera = cv2.VideoCapture(0)
+            camera_config = config.get('sensors', {}).get('camera', {})
+            if not camera_config.get('enabled', True):
+                return
+            
+            camera = cv2.VideoCapture(camera_config.get('device', 0))
+            width, height = camera_config.get('resolution', [320, 240])
+            camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
             
             while True:
                 success, frame = camera.read()
                 if not success:
                     break
                 
-                frame = cv2.resize(frame, (320, 240))
-                
-                # TODO: Add object tracking overlay when in follow mode
-                # if robot_controller.current_mode == 'follow' and follow_settings['tracking']:
-                #     frame = draw_target_box(frame, follow_settings)
+                # TODO: Add AI processing here
+                # - Object detection overlay
+                # - Color tracking box
+                # - Line detection visualization
                 
                 ret, buffer = cv2.imencode('.jpg', frame)
                 frame_bytes = buffer.tobytes()
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-        except:
-            # If no camera, send blank frame
-            pass
+        except Exception as e:
+            logger.error(f"Video feed error: {e}")
     
     return Response(generate(),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
@@ -138,23 +184,20 @@ def set_mode():
         
         # Start/stop controllers based on mode
         if mode == 'auto':
-            auto_controller.start()
-            # Stop follow controller if running
-            # if follow_controller:
-            #     follow_controller.stop()
+            if auto_controller:
+                auto_controller.start()
+            if follow_controller:
+                follow_controller.stop()
         elif mode == 'follow':
-            # Start follow controller
-            # if follow_controller:
-            #     follow_controller.start()
-            # Stop auto controller if running
+            if follow_controller:
+                follow_controller.start()
             if auto_controller:
                 auto_controller.stop()
         else:  # manual
-            # Stop both controllers
             if auto_controller:
                 auto_controller.stop()
-            # if follow_controller:
-            #     follow_controller.stop()
+            if follow_controller:
+                follow_controller.stop()
         
         # Emit state update
         socketio.emit('mode_update', {'mode': mode})
@@ -165,7 +208,7 @@ def set_mode():
         return jsonify({'status': 'error', 'message': 'Failed to set mode'}), 400
 
 
-# ===== FOLLOW MODE SETTINGS (NEW) =====
+# ===== FOLLOW MODE SETTINGS =====
 
 @app.route('/set_follow_color')
 def set_follow_color():
@@ -179,26 +222,24 @@ def set_follow_color():
     follow_settings['target_color'] = color
     log_message(f"Target color set to: {color.upper()}")
     
-    # TODO: Update follow controller with new color
-    # if follow_controller:
-    #     follow_controller.set_target_color(color)
+    if follow_controller:
+        follow_controller.set_target_color(color)
     
     return jsonify({'status': 'success', 'color': color})
 
 
 @app.route('/set_follow_distance')
 def set_follow_distance():
-    """Set follow distance (safe distance from target)"""
+    """Set follow distance"""
     try:
         distance = int(request.args.get('distance', 50))
-        distance = max(20, min(100, distance))  # Clamp between 20-100cm
+        distance = max(20, min(100, distance))
         
         follow_settings['follow_distance'] = distance
         log_message(f"Follow distance set to: {distance} cm")
         
-        # TODO: Update follow controller with new distance
-        # if follow_controller:
-        #     follow_controller.set_follow_distance(distance)
+        if follow_controller:
+            follow_controller.set_follow_distance(distance)
         
         return jsonify({'status': 'success', 'distance': distance})
     except ValueError:
@@ -338,29 +379,46 @@ def get_sensor_data() -> dict:
     """Get current sensor/robot state"""
     state = robot_controller.get_state()
     
-    # Simulate battery (replace with actual reading)
-    import random
-    battery = random.randint(75, 85)
-    
-    return {
-        'state': state['state'],
-        'speed': state['speed'],
-        'battery': battery,
-        'left_motor_speed': state['left_motor_speed'],
-        'right_motor_speed': state['right_motor_speed'],
-        'line_sensors': [False, False, True, True, True, True, False, False],
-        'line_position': 0,
-        'distance': random.uniform(20, 80)
-    }
+    # Get sensor data from Arduino (if available)
+    if isinstance(motor_driver, ArduinoDriver):
+        arduino_data = motor_driver.get_sensor_data()
+        
+        # Simulate battery (TODO: Add real battery monitoring)
+        import random
+        battery = random.randint(75, 85)
+        
+        return {
+            'state': state['state'],
+            'speed': state['speed'],
+            'battery': battery,
+            'left_motor_speed': arduino_data.get('left_speed', 0),
+            'right_motor_speed': arduino_data.get('right_speed', 0),
+            'line_sensors': arduino_data.get('line', [0] * 8),
+            'line_position': arduino_data.get('line_pos', 0),
+            'distance': arduino_data.get('distance', 0.0)
+        }
+    else:
+        # Legacy mode - simulate sensors
+        import random
+        battery = random.randint(75, 85)
+        
+        return {
+            'state': state['state'],
+            'speed': state['speed'],
+            'battery': battery,
+            'left_motor_speed': state['left_motor_speed'],
+            'right_motor_speed': state['right_motor_speed'],
+            'line_sensors': [False, False, True, True, True, True, False, False],
+            'line_position': 0,
+            'distance': random.uniform(20, 80)
+        }
 
 
 def get_target_data() -> dict:
     """Get current target tracking data for follow mode"""
-    # TODO: Get actual data from follow controller
-    # if follow_controller:
-    #     return follow_controller.get_target_data()
+    if follow_controller:
+        return follow_controller.get_target_data()
     
-    # Return current follow_settings as placeholder
     return {
         'tracking': follow_settings['tracking'],
         'target_color': follow_settings['target_color'],
@@ -440,6 +498,11 @@ def main():
     # Initialize hardware
     if not initialize_hardware():
         logger.error("Failed to initialize hardware. Exiting.")
+        logger.error("Please check:")
+        logger.error("  1. Arduino is connected to USB port")
+        logger.error("  2. Serial port is correct in hardware_config.yaml")
+        logger.error("  3. User has permission to access serial port")
+        logger.error("     Run: sudo usermod -a -G dialout $USER")
         sys.exit(1)
     
     logger.info("Hardware initialized successfully")

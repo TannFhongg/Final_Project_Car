@@ -1,7 +1,35 @@
-# Hardware Configuration for Raspberry Pi 5 + L298N
+# Hardware Configuration for Raspberry Pi 5 + Arduino Uno
 # Robot: 2 rear motors + 1 front universal wheel
 
-# Motor Driver L298N Configuration
+# Control Mode: 'arduino' or 'direct'
+# - 'arduino': Use Arduino Uno for motor/sensor control (Recommended)
+# - 'direct': Use Raspberry Pi GPIO directly with L298N (Legacy)
+control_mode: 'arduino'
+
+# Arduino Configuration (when control_mode = 'arduino')
+arduino:
+  port: '/dev/ttyACM0'  # Arduino Uno usually appears as ttyACM0 (or ttyUSB0)
+  baudrate: 115200
+  timeout: 1.0
+  reconnect_interval: 5.0  # Try reconnect every 5 seconds if disconnected
+  
+  # Arduino Uno pin mapping (for reference)
+  pins:
+    # Motor pins
+    left_motor_pwm: 9      # ENA - PWM
+    left_motor_in1: 2      # IN1 - Direction
+    left_motor_in2: 3      # IN2 - Direction
+    right_motor_pwm: 10    # ENB - PWM
+    right_motor_in3: 4     # IN3 - Direction
+    right_motor_in4: 5     # IN4 - Direction
+    
+    # Sensor pins
+    ultrasonic_trig: 12
+    ultrasonic_echo: 11
+    line_sensors: [A0, A1, A2, A3, A4, A5, 6, 7]  # 8 sensors
+
+# Motor Driver Configuration (when control_mode = 'direct')
+# Note: Not used when Arduino is controlling motors
 motor_driver:
   type: "L298N"
   
@@ -36,22 +64,70 @@ robot:
 
 # Safety Limits
 safety:
-  emergency_stop_distance: 0.2  # meters
+  emergency_stop_distance: 0.2  # meters (20cm)
   max_acceleration: 2.0         # m/s²
   timeout: 5.0                  # seconds - motor auto-stop if no command received
+  min_safe_distance: 15.0       # cm - minimum distance before obstacle avoidance
 
-# Sensor Configuration (for future expansion)
+# Sensor Configuration
 sensors:
+  # HC-SR04 Ultrasonic (controlled by Arduino)
   ultrasonic:
-    trigger_pin: 17
-    echo_pin: 4
-    max_distance: 4.0   # meters
+    enabled: true
+    max_distance: 400.0   # cm
+    min_distance: 2.0     # cm
   
+  # IR Line Sensors (8 sensors, controlled by Arduino)
   line_sensors:
-    enabled: false
-    pins: [5, 6, 7, 8, 9, 10, 11, 12]  # 8 sensors array
+    enabled: true
+    count: 8
+    threshold: 512        # ADC threshold (0-1023) for black/white detection
   
-  k210_vision:
+  # Raspberry Pi Camera V2
+  camera:
+    enabled: true
+    resolution: [320, 240]
+    framerate: 20
+    device: 0  # /dev/video0
+
+# AI/Computer Vision Settings
+ai:
+  # Object Detection
+  object_detection:
     enabled: false
-    uart_port: "/dev/ttyAMA0"
-    baudrate: 115200
+    model: 'yolov5s'  # or 'mobilenet_ssd', 'efficientdet'
+    confidence_threshold: 0.5
+  
+  # Color Tracking (for Follow mode)
+  color_tracking:
+    enabled: true
+    colors:
+      red:
+        lower_hsv: [0, 100, 100]
+        upper_hsv: [10, 255, 255]
+      green:
+        lower_hsv: [40, 50, 50]
+        upper_hsv: [80, 255, 255]
+      blue:
+        lower_hsv: [100, 50, 50]
+        upper_hsv: [130, 255, 255]
+      yellow:
+        lower_hsv: [20, 100, 100]
+        upper_hsv: [30, 255, 255]
+      orange:
+        lower_hsv: [10, 100, 100]
+        upper_hsv: [20, 255, 255]
+  
+  # Line Detection
+  line_detection:
+    enabled: true
+    use_camera: false  # Use camera instead of IR sensors
+    threshold: 128
+
+# Follow Mode Settings
+follow_mode:
+  default_distance: 50  # cm - maintain this distance from target
+  min_distance: 20      # cm - stop if closer than this
+  max_distance: 100     # cm - stop following if further than this
+  angle_tolerance: 0.1  # radians - how centered target must be
+  speed_multiplier: 0.8 # Reduce speed in follow mode for safety
