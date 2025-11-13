@@ -1,4 +1,20 @@
+# Python cache
 __pycache__/
+*.pyc
+
+# Virtual environments
 venv/
-*.log
+env/
+
+# YOLO datasets and weights
+runs/
+dataset/
 data/
+models/
+
+# Logs
+*.log
+
+# Build files
+build/
+dist/
