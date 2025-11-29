@@ -1,31 +1,77 @@
+# Hardware Configuration for LogisticsBot (Lite Version)
+# Raspberry Pi 5 + Arduino Uno
+# Features: Auto Mode, Obstacle Avoidance, Visual Odometry
+
+# Control Mode
 control_mode: 'arduino'
 
+# Arduino Configuration
 arduino:
-  port: '/dev/ttyACM0' # Hoặc /dev/serial0 tùy bạn
-  baudrate: 115200
+  port: '/dev/ttyACM0'   # Cổng USB của Arduino
+  baudrate: 115200       # Tốc độ giao tiếp
 
+# Robot Physical Parameters
+robot:
+  wheel_diameter: 0.065  # meters (65mm)
+  wheel_base: 0.15       # meters (150mm)
+
+# Safety Limits (Quan trọng cho tính năng Né vật cản)
+safety:
+  min_safe_distance: 25.0  # cm (Dưới mức này sẽ kích hoạt né tránh)
+  timeout: 5.0             # seconds
+
+# Sensor Configuration
 sensors:
   camera:
+    # Cấu hình cho Picamera2 trên Pi 5
     picamera2:
-      format: 'BGR888' # Nhớ là BGR
+      format: 'BGR888'    # Bắt buộc là BGR để khớp màu với OpenCV/AI
       buffer_count: 4
       controls:
         FrameRate: 30
+    resolution: [640, 480]
 
+# Lane Following Settings (PID)
 lane_following:
+  enabled: true
+  
+  # PID Controller parameters
   pid:
-    kp: 0.8
-    ki: 0.0
-    kd: 0.3
-    min_output: -255
-    max_output: 255
-  base_speed: 150
-  max_speed: 255
-  min_speed: 60
+    kp: 0.8              # Độ nhạy (Proportional)
+    ki: 0.0              # Tích phân (Integral - thường để 0)
+    kd: 0.3              # Giảm chấn (Derivative)
+    
+    # PID output limits (Đã mở max 255)
+    max_output: 255      
+    min_output: -255     
+    
+    # Advanced
+    derivative_smoothing: 0.7
+  
+  # Speed settings (Đã tăng tốc)
+  base_speed: 150        # Tốc độ chạy thẳng cơ bản
+  max_speed: 255         # Tốc độ tối đa cho phép
+  min_speed: 60          # Tốc độ tối thiểu khi rẽ
 
+# AI & Computer Vision Settings
 ai:
+  # Cấu hình dò làn đường (Lane Detection)
   lane_detection:
-    roi_top_ratio: 0.5
-    hough_threshold: 20
-    min_line_length: 30
-    max_line_gap: 20
+    roi_top_ratio: 0.5       # Cắt bỏ 50% phần trên ảnh
+    roi_bottom_ratio: 1.0
+    canny_low: 50
+    canny_high: 150
+    hough_threshold: 20      # Nhạy hơn để bắt vạch mờ
+    min_line_length: 30      # Bắt được vạch ngắn
+    max_line_gap: 20         # Giữ khoảng cách nối vạch nhỏ
+    blur_kernel: 5
+
+# Visual Odometry (Đo quãng đường)
+visual_odometry:
+  enabled: true
+  # Scale Factor đã calibrate (1 pixel = ~0.24 cm)
+  scale_factor: 0.23776
+  
+  max_features: 200
+  quality_level: 0.01
+  min_distance: 10
